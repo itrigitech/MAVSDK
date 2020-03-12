@@ -1,9 +1,12 @@
 #pragma once
 
 #include "global_include.h"
+#include "mavlink_address.h"
 #include "mavlink_include.h"
 #include "mavlink_parameters.h"
 #include "mavlink_commands.h"
+#include "mavlink_message_handler.h"
+#include "mavlink_mission_transfer.h"
 #include "timeout_handler.h"
 #include "call_every_handler.h"
 #include "thread_pool.h"
@@ -26,7 +29,7 @@ class PluginImplBase;
 
 // This class is the impl of System. This is to hide the private methods
 // and functionality from the public library API.
-class SystemImpl {
+class SystemImpl : public Sender {
 public:
     enum class FlightMode {
         UNKNOWN,
@@ -69,7 +72,7 @@ public:
     void reset_call_every(const void* cookie);
     void remove_call_every(const void* cookie);
 
-    bool send_message(mavlink_message_t& message);
+    bool send_message(mavlink_message_t& message) override;
 
     static FlightMode to_flight_mode_from_custom_mode(uint32_t custom_mode);
 
@@ -209,12 +212,16 @@ public:
     void send_autopilot_version_request();
     void send_flight_information_request();
 
+    MAVLinkMissionTransfer& mission_transfer() { return _mission_transfer; };
+
     void intercept_incoming_messages(std::function<bool(mavlink_message_t&)> callback);
     void intercept_outgoing_messages(std::function<bool(mavlink_message_t&)> callback);
 
     // Non-copyable
     SystemImpl(const SystemImpl&) = delete;
     const SystemImpl& operator=(const SystemImpl&) = delete;
+
+    MAVLinkAddress target_address{};
 
 private:
     // Helper methods added to increase readablity
@@ -242,8 +249,7 @@ private:
     std::pair<MAVLinkCommands::Result, MAVLinkCommands::CommandLong>
     make_command_flight_mode(FlightMode mode, uint8_t component_id);
 
-    // We use std::pair instead of a std::optional.
-    std::pair<MAVLinkCommands::Result, MAVLinkCommands::CommandLong>
+    MAVLinkCommands::CommandLong
     make_command_msg_rate(uint16_t message_id, double rate_hz, uint8_t component_id);
 
     static void receive_float_param(
@@ -258,16 +264,11 @@ private:
     std::mutex _component_discovered_callback_mutex{};
     discover_callback_t _component_discovered_callback{nullptr};
 
-    struct MAVLinkHandlerTableEntry {
-        uint16_t msg_id;
-        mavlink_message_handler_t callback;
-        const void* cookie; // This is the identification to unregister.
-    };
+    Time _time{};
+    AutopilotTime _autopilot_time{};
 
-    std::mutex _mavlink_handler_table_mutex{};
-    std::vector<MAVLinkHandlerTableEntry> _mavlink_handler_table{};
-
-    std::atomic<uint8_t> _system_id;
+    // Needs to be before anything else because they can depend on it.
+    MAVLinkMessageHandler _message_handler{};
 
     uint64_t _uuid{0};
 
@@ -298,7 +299,6 @@ private:
     static constexpr double _HEARTBEAT_SEND_INTERVAL_S = 1.0;
 
     MAVLinkParameters _params;
-
     MAVLinkCommands _commands;
 
     Timesync _timesync;
@@ -306,8 +306,7 @@ private:
     TimeoutHandler _timeout_handler;
     CallEveryHandler _call_every_handler;
 
-    Time _time{};
-    AutopilotTime _autopilot_time{};
+    MAVLinkMissionTransfer _mission_transfer;
 
     std::mutex _plugin_impls_mutex{};
     std::vector<PluginImplBase*> _plugin_impls{};
